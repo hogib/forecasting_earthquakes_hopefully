@@ -1,0 +1,23 @@
+[project]
+name = "forecasting-earthquakes-hopefully"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Oguzb", email = "hoguzbolat@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.5",
+    "obspy>=1.5.1",
+    "pandas>=3.1.1",
+    "torch>=2.15.0",
+]
+
+[project.scripts]
+forecasting-earthquakes-hopefully = "forecasting_earthquakes_hopefully:main"
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
