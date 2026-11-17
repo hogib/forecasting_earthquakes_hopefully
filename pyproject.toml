@@ -1,7 +1,7 @@
 [project]
 name = "forecasting-earthquakes-hopefully"
 version = "0.1.0"
-description = "Add your description here"
+description = "Will an earthquake of magnitude 5 or above occur near a station in the next 14 days?"
 readme = "README.md"
 authors = [
     { name = "Oguzb", email = "hoguzbolat@gmail.com" }

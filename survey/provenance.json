@@ -1,0 +1,59 @@
+{
+ "argv": [
+  "/home/oguzb/Projects/sismokaos/forecasting_earthquakes_hopefully/src/forecasting_earthquakes_hopefully/survey.py",
+  "survey",
+  "/mnt/port/data/stations",
+  "/mnt/port/tdvms/sivrice_raw",
+  "/mnt/port/tdvms/sivrice_fdsn_raw",
+  "/mnt/port/split_data_elazig"
+ ],
+ "written": "2026-11-17T16:58:33+00:00",
+ "parameters": {
+  "min_magnitude": 5.0,
+  "radius_km": 50.0,
+  "lead_days": 14,
+  "clean_days": 60,
+  "roots": [
+   "/mnt/port/data/stations",
+   "/mnt/port/tdvms/sivrice_raw",
+   "/mnt/port/tdvms/sivrice_fdsn_raw",
+   "/mnt/port/split_data_elazig"
+  ]
+ },
+ "commit": "4355573141096d961865944e3505449f4e9f3e01 (uncommitted changes)",
+ "versions": {
+  "python": "3.13.16"
+ },
+ "input_hashes": {
+  "stations.csv": "366d0d601bf326e6c2ab18fb9f1ec0f07f9c749ce25b690ae65cf8c7246c2bfb",
+  "events.csv": "90cfac12cb528ee38007f8e012f2420895b3ea95786c46d10ac7c87be3346dfd"
+ },
+ "files_per_root": {
+  "/mnt/port/data/stations": 271,
+  "/mnt/port/tdvms/sivrice_raw": 199,
+  "/mnt/port/tdvms/sivrice_fdsn_raw": 529,
+  "/mnt/port/split_data_elazig": 2571
+ },
+ "held_out_stations_not_entered": [
+  "ARNA",
+  "BAND",
+  "CATL",
+  "CMH",
+  "CTKS",
+  "ELBA",
+  "GCAM",
+  "KAND",
+  "KIRK",
+  "KURT",
+  "MANT",
+  "MARM",
+  "MRMT",
+  "SEMS",
+  "SLVT",
+  "TRNM",
+  "VIZE"
+ ],
+ "names_not_understood": [],
+ "stations": 17,
+ "station_events": 66
+}

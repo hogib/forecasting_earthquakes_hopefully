@@ -1,0 +1,18 @@
+station,channels,latitude,longitude,days,first,last,stretches,longest,roots
+AKHS,TU HH,38.8788,27.8138,316,2025-06-16,2026-04-27,1,316,/mnt/port/data/stations
+BKES,TU HH,39.733,27.9293,366,2025-02-10,2026-02-10,1,366,/mnt/port/data/stations
+CNG,TU HH,38.1954,39.2954,199,2019-07-24,2020-07-24,2,178,/mnt/port/data/stations
+DEMI,TU HH,39.0428,28.7162,601,2024-09-25,2026-08-09,5,495,/mnt/port/data/stations
+DURS,TU HH,39.6011,28.4742,442,2025-02-10,2026-04-27,1,442,/mnt/port/data/stations
+DYDN,"TU BH, TU HH",39.5436,43.6889,201,2011-07-23,2026-04-04,2,110,/mnt/port/data/stations
+ELZG,TU HH,38.4978,38.9844,705,2019-07-24,2021-06-27,1,705,/mnt/port/data/stations
+FRT,TU HH,38.684,39.1976,863,2015-01-24,2021-06-27,35,366,/mnt/port/data/stations; /mnt/port/split_data_elazig; /mnt/port/tdvms/sivrice_raw
+GEVA,"TU BH, TU HH",38.3122,43.0586,201,2011-07-23,2026-04-04,2,110,/mnt/port/data/stations
+KOVA,TU HH,38.7057,39.8126,515,2015-01-24,2020-01-24,38,354,/mnt/port/split_data_elazig; /mnt/port/tdvms/sivrice_raw
+MAYA,TU HH,38.3253,38.4253,466,2016-12-25,2020-01-24,22,354,/mnt/port/split_data_elazig; /mnt/port/tdvms/sivrice_raw
+NARI,TU HH,37.884,38.7612,445,2017-03-24,2020-01-24,20,354,/mnt/port/split_data_elazig; /mnt/port/tdvms/sivrice_raw
+PURS,TU HH,39.23126,28.20362,442,2025-02-10,2026-04-27,1,442,/mnt/port/data/stations
+STEP,TU HH,39.3767,27.7183,442,2025-02-10,2026-04-27,1,442,/mnt/port/data/stations
+SVRC,KO BH,38.3775,39.306,1339,2015-07-18,2021-06-27,13,642,/mnt/port/data/stations; /mnt/port/split_data_elazig; /mnt/port/tdvms/sivrice_fdsn_raw; /mnt/port/tdvms/sivrice_raw
+TVAN,"TU BH, TU HH",38.5241,43.4037,180,2011-07-23,2026-04-04,3,91,/mnt/port/data/stations
+VMUR,TU HH,38.9894,43.5716,201,2011-07-23,2026-04-04,2,110,/mnt/port/data/stations
