@@ -47,3 +47,35 @@ def test_previous_held_out_days_stay_held_out():
     assert split.held_out("ELZG", dt.date(2019, 12, 2)) and split.held_out("PURS", dt.date(2025, 7, 16))
     assert not split.held_out("ELZG", dt.date(2020, 1, 20))
     assert split.held_out("MARM", dt.date(2020, 1, 20))
+
+
+def test_components_are_chosen_by_name_and_a_missing_one_is_none():
+    import io
+
+    from obspy import Stream, Trace, UTCDateTime
+    start, fs = UTCDateTime(2020, 2, 1), 20.0
+    st = Stream([Trace(np.full(int(fs * 3600), v, dtype=np.int32), dict(channel=ch, sampling_rate=fs, starttime=start + shift))
+                 for ch, v, shift in (("HHN", 2, 0), ("HHZ", 1, 60))])              # N comes first in the file
+    raw = io.BytesIO()
+    st.write(raw, format="MSEED")
+    out, rate, found = envelopes.read_components(raw.getvalue(), dt.date(2020, 2, 1), dt.date(2020, 2, 2), "ZNE")
+    assert rate == fs and found == ["HHN", "HHZ"] and out["E"] is None
+    z, n = out["Z"][0], out["N"][0]
+    assert out["Z"][1] == "HHZ" and len(z) == int(fs * 86400)
+    assert np.isnan(z[:int(fs * 60)]).all() and (z[int(fs * 60):int(fs * 3660)] == 1).all() and np.isnan(z[int(fs * 3660):]).all()
+    assert (n[:int(fs * 3600)] == 2).all()
+
+
+def test_filtering_in_blocks_gives_what_one_piece_gives():
+    fs = 50.0
+    rng = np.random.default_rng(2)
+    x = np.cumsum(rng.normal(size=int(fs * 7200))) + 50 * rng.normal(size=int(fs * 7200))     # drifting, all bands
+    x[int(fs * 2990):int(fs * 3020)] = np.nan                                                # a gap across a block edge
+    x[int(fs * 5000):int(fs * 5000) + 20] = np.nan                                           # a short one, filled
+    whole, gaps = envelopes.band_rms(x.astype(np.float32), fs, chunk=None)
+    parts, gaps2 = envelopes.band_rms(x.astype(np.float32), fs, chunk=1000, pad=600)
+    assert gaps == gaps2 == 1
+    assert (np.isfinite(whole) == np.isfinite(parts)).all()
+    ok = np.isfinite(whole)
+    d = np.abs(np.log10(parts[ok] / whole[ok]))        # the largest differences sit at the edge of the gap, lowest band
+    assert d.max() < 0.01 and np.percentile(d, 99.9) < 0.001

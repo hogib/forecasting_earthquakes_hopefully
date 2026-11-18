@@ -1,25 +1,30 @@
 """Band envelopes at 1 Hz: the input of the models. One array per station and day.
 
-    uv run python -u -m forecasting_earthquakes_hopefully.envelopes OUT_DIR ROOT [ROOT ...] --station ELZG [--component Z] [--jobs 4]
+    uv run python -u -m forecasting_earthquakes_hopefully.envelopes OUT_DIR ROOT [ROOT ...] --station ELZG [--component ZNE] [--jobs 4]
 
 Every ROOT/<STATION>/ holds MiniSEED files of the station, inside .zip archives or not, named
-<NET>_<STATION>_<DDMMYYYY>_000000_<DDMMYYYY>_000000_<CHANNEL>.mseed, of one day or of several. Only the
-channel of --component (Z, the vertical, unless given) is used, chosen by name, never by its place in the file.
-Envelopes of different components belong in different OUT_DIRs.
+<NET>_<STATION>_<DDMMYYYY>_000000_<DDMMYYYY>_000000_<CHANNEL>.mseed, of one day or of several. A channel is
+chosen by the last letter of its name, never by its place in the file. --component names the components:
+one letter (Z, the vertical, unless given) or several (ZNE). Different choices belong in different OUT_DIRs.
 
 For every day that is not held out (split.held_out):
 
   OUT_DIR/<STATION>/<YYYY-MM-DD>.npy   float32 (bands, 86400): for each band of BANDS the root mean square of
                                        the band-passed signal in every second of the day (UTC), in counts;
-                                       NaN where the second has a missing sample
-  OUT_DIR/<STATION>/index.csv          date, coverage (share of the seconds with a value in the lowest band),
-                                       sampling rate, gaps, source file and member, channel
+                                       NaN where the second has a missing sample. With several components
+                                       (components, bands, 86400) in the order of --component, and a
+                                       component that the file does not hold is NaN throughout
+  OUT_DIR/<STATION>/index.csv          date, coverage (share of the seconds with a value in the lowest band;
+                                       with several components the smallest of them, and coverage_<C> each),
+                                       sampling rate, gaps, source file and member, channel (the channels
+                                       used), channels_in_file (every channel name the file holds)
   OUT_DIR/<STATION>/provenance.json    command line, parameters, commit, versions, source files with size
 
 Held-out days are cut out of the file before anything is computed from them. Gaps shorter than GAP_FILL
 seconds are interpolated; a longer gap splits the signal into pieces that are demeaned, detrended and filtered
 on their own (zero-phase Butterworth), and pieces shorter than MIN_PIECE seconds are dropped. A file of several
-days is filtered across midnight, so only the ends of a file and of a gap carry the edge effect of the filter.
+days is filtered in blocks of CHUNK seconds, each with PAD seconds of the neighbouring signal on both sides that
+are thrown away afterwards, so midnight carries no edge effect: only the ends of a file and of a gap do.
 A band whose upper edge is not below 0.45 of the sampling rate is left NaN. The response of the instrument
 is not removed. Days already in the index are kept unless --overwrite. Exits nonzero when nothing is written.
 """
@@ -48,6 +53,8 @@ COMPONENT = "Z"      # the default of --component
 FILTER_ORDER = 4
 GAP_FILL = 2.0       # s
 MIN_PIECE = 60.0     # s, six periods of the lowest frequency
+CHUNK = 86400        # s filtered at a time: bounds the memory, not the result
+PAD = 600            # s of signal on each side of a block, 60 periods of the lowest frequency
 DAY = 86400
 SPAN = re.compile(r"([A-Z0-9]+)_([A-Z0-9]+)_(\d{2})(\d{2})(\d{4})_000000_(\d{2})(\d{2})(\d{4})_000000_([A-Z]+)\.mseed")
 
@@ -87,13 +94,27 @@ def pieces(mask):
     return list(zip(np.where(edges == 1)[0], np.where(edges == -1)[0]))
 
 
-def band_rms(x, fs):
+def band_rms(x, fs, chunk=CHUNK, pad=PAD):
     """x: samples on a regular grid, NaN where missing, a whole number of seconds long.
-    Returns float32 (bands, seconds) and the number of gaps left in x."""
-    x = x.astype(np.float64)
+    Returns float32 (bands, seconds) and the number of gaps left in x (missing stretches of GAP_FILL seconds
+    or more with data on both sides). chunk=None filters x in one piece."""
     n_fs = int(round(fs))
     if abs(fs - n_fs) > 1e-6 or len(x) % n_fs:
         raise ValueError(f"sampling rate {fs} Hz or length {len(x)} does not give whole seconds")
+    seconds = len(x) // n_fs
+    gaps = sum(1 for a, b in pieces(~np.isfinite(x)) if a > 0 and b < len(x) and (b - a) >= GAP_FILL * fs)
+    if chunk is None or seconds <= chunk + 2 * pad:
+        return _block(x, fs, n_fs), gaps
+    out = np.empty((len(BANDS), seconds), dtype=np.float32)
+    for a in range(0, seconds, chunk):
+        b = min(a + chunk, seconds)
+        lo, hi = max(a - pad, 0), min(b + pad, seconds)
+        out[:, a:b] = _block(x[lo * n_fs:hi * n_fs], fs, n_fs)[:, a - lo:b - lo]
+    return out, gaps
+
+
+def _block(x, fs, n_fs):
+    x = x.astype(np.float64)
     valid = np.isfinite(x)
     for a, b in pieces(~valid):                       # short gaps inside the data: linear interpolation
         if a > 0 and b < len(x) and (b - a) < GAP_FILL * fs:
@@ -110,56 +131,80 @@ def band_rms(x, fs):
             y[a:b] = sosfiltfilt(sos, detrend(x[a:b] - x[a:b].mean(), type="linear"))
         with np.errstate(invalid="ignore"):
             out[k] = np.sqrt((y.reshape(-1, n_fs) ** 2).mean(axis=1))      # NaN when a sample of the second is missing
-    return out, max(len(pieces(valid)) - 1, 0)
+    return out
 
 
-def read_component(raw, first, end, component=COMPONENT):
-    """The samples of the component from first 00:00 to end 00:00 on a regular grid (NaN where no data),
-    the sampling rate and the name of the channel."""
+def read_components(raw, first, end, components=COMPONENT):
+    """For each letter of components the samples from first 00:00 to end 00:00 on a regular grid (NaN where no
+    data) and the name of the channel, or None when the file has no such channel; then the sampling rate and
+    every channel name in the file."""
     from obspy import UTCDateTime, read
-    st = [tr for tr in read(io.BytesIO(raw)) if tr.stats.channel.endswith(component)]
-    if not st:
-        raise ValueError(f"no {component} channel in the file")
-    rates, names = {tr.stats.sampling_rate for tr in st}, {tr.stats.channel for tr in st}
-    if len(rates) != 1 or len(names) != 1:
-        raise ValueError(f"several sampling rates or {component} channels: {sorted(rates)}, {sorted(names)}")
-    fs = rates.pop()
-    n = int(round((end - first).days * DAY * fs))
-    x = np.full(n, np.nan, dtype=np.float32)
-    start = UTCDateTime(first.year, first.month, first.day)
-    for tr in st:
-        i = int(round((tr.stats.starttime - start) * fs))
-        lo, hi = max(i, 0), min(i + tr.stats.npts, n)
-        if hi > lo:
-            x[lo:hi] = tr.data[lo - i:hi - i]
-    return x, fs, names.pop()
+    stream = read(io.BytesIO(raw))
+    found = sorted({tr.stats.channel for tr in stream})
+    start, out, fs = UTCDateTime(first.year, first.month, first.day), {}, None
+    for c in components:
+        st = [tr for tr in stream if tr.stats.channel.endswith(c)]
+        if not st:
+            out[c] = None
+            continue
+        rates, names = {tr.stats.sampling_rate for tr in st}, {tr.stats.channel for tr in st}
+        if len(rates) != 1 or len(names) != 1 or (fs is not None and rates != {fs}):
+            raise ValueError(f"several sampling rates or {c} channels: {sorted(rates)}, {sorted(names)}, {fs}")
+        fs = rates.pop()
+        n = int(round((end - first).days * DAY * fs))
+        x = np.full(n, np.nan, dtype=np.float32)
+        for tr in st:
+            i = int(round((tr.stats.starttime - start) * fs))
+            lo, hi = max(i, 0), min(i + tr.stats.npts, n)
+            if hi > lo:
+                x[lo:hi] = tr.data[lo - i:hi - i]
+            stream.remove(tr)                          # the samples are in x now: free the trace
+        out[c] = (x, names.pop())
+    if fs is None:
+        raise ValueError(f"no {'/'.join(components)} channel in the file, it holds {found}")
+    return out, fs, found
 
 
 def one_file(job):
     """Builds the days of one file that are wanted; returns their index rows, or an error text."""
-    path, member, first, end, station, wanted, out, component = job
+    path, member, first, end, station, wanted, out, components = job
     try:
         raw = zipfile.ZipFile(path).read(member) if member else Path(path).read_bytes()
-        x, fs, channel = read_component(raw, first, end, component)
+        signals, fs, found = read_components(raw, first, end, components)
         del raw
         per_day = int(round(DAY * fs))
         days = [first + dt.timedelta(days=i) for i in range((end - first).days)]
-        for i, day in enumerate(days):                 # a held-out day is cut out before anything is computed
-            if split.held_out(station, day):
-                x[i * per_day:(i + 1) * per_day] = np.nan
-        env, _ = band_rms(x, fs)
+        env, seconds, names = {}, None, []
+        for c in components:                           # one component after the other: memory of one signal
+            if signals[c] is None:
+                continue
+            x, name = signals[c]
+            for i, day in enumerate(days):             # a held-out day is cut out before anything is computed
+                if split.held_out(station, day):
+                    x[i * per_day:(i + 1) * per_day] = np.nan
+            env[c], _ = band_rms(x, fs)
+            if seconds is None:
+                seconds = np.isfinite(x).reshape(len(days) * DAY, -1).all(axis=1)
+            names.append(name)
+            signals[c] = x = None
         rows = []
         for i, day in enumerate(days):
             if day not in wanted:
                 continue
-            e = env[:, i * DAY:(i + 1) * DAY]
-            seconds = np.isfinite(x[i * per_day:(i + 1) * per_day]).reshape(DAY, -1).all(axis=1)
+            part = slice(i * DAY, (i + 1) * DAY)
+            e = np.stack([env[c][:, part] if c in env else np.full((len(BANDS), DAY), np.nan, dtype=np.float32)
+                          for c in components])
+            cover = [round(float(np.isfinite(e[k, 0]).mean()), 5) for k in range(len(components))]
+            row = dict(date=day.isoformat(), coverage=min(cover), input_rate=fs, gaps=max(len(pieces(seconds[part])) - 1, 0),
+                       channel=" ".join(names), file=Path(path).name, member=member or "", channels_in_file=" ".join(found))
+            if len(components) > 1:
+                row.update({f"coverage_{c}": v for c, v in zip(components, cover)})
+            else:
+                e = e[0]
             tmp = out / f"{day.isoformat()}.tmp.npy"
             np.save(tmp, e)
             os.replace(tmp, out / f"{day.isoformat()}.npy")
-            rows.append(dict(date=day.isoformat(), coverage=round(float(np.isfinite(e[0]).mean()), 5),
-                             input_rate=fs, gaps=max(len(pieces(seconds)) - 1, 0), channel=channel,
-                             file=Path(path).name, member=member or ""))
+            rows.append(row)
         return rows
     except Exception as error:      # one unreadable file must not stop the station
         return f"{type(error).__name__}: {error}"
@@ -171,7 +216,7 @@ def main():
     ap.add_argument("roots", type=Path, nargs="+")
     ap.add_argument("--station", required=True)
     ap.add_argument("--jobs", type=int, default=4)
-    ap.add_argument("--component", choices=["Z", "N", "E"], default=COMPONENT)
+    ap.add_argument("--component", choices=["Z", "N", "E", "ZNE"], default=COMPONENT)
     ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args()
     out = args.out / args.station
@@ -221,7 +266,7 @@ def main():
     import scipy
     (out / "provenance.json").write_text(json.dumps(dict(
         argv=sys.argv, written=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        parameters=dict(bands=BANDS, component=args.component, filter_order=FILTER_ORDER, gap_fill=GAP_FILL, min_piece=MIN_PIECE,
+        parameters=dict(bands=BANDS, component=args.component, filter_order=FILTER_ORDER, gap_fill=GAP_FILL, min_piece=MIN_PIECE, chunk=CHUNK, pad=PAD,
                         split=dict(anchor=split.ANCHOR.isoformat(), block_days=split.BLOCK_DAYS,
                                    test_share=split.TEST_SHARE, seed=split.SEED)),
         commit=commit(), versions=dict(python=platform.python_version(), numpy=np.__version__, scipy=scipy.__version__,
