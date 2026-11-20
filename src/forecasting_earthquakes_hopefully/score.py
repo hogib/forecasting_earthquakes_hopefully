@@ -31,7 +31,8 @@ def auc(score, label):
 
 
 def out_of_fold(table, forecast):
-    """table: labels.csv with whatever columns the forecast needs. forecast(train, test) -> scores of test.
+    """table: labels.csv with whatever columns the forecast needs. forecast(train, test) -> scores of test; with
+    the attribute both=True it is called once per fold and gives (scores of train, scores of test).
     Returns a copy of the days that are not dropped with `score` and, per share of ALARM_SHARES, `alarm@a`."""
     use = table[table["dropped"] == 0].reset_index(drop=True)
     out = use.copy()
@@ -41,8 +42,12 @@ def out_of_fold(table, forecast):
     for g in sorted(use["group"].unique()):
         test = use["group"] == g
         train = use[~test]
-        s_train = np.asarray(forecast(train, train), dtype=float)
-        out.loc[test, "score"] = np.asarray(forecast(train, use[test]), dtype=float)
+        if getattr(forecast, "both", False):               # a forecast that is costly to fit: one call per fold
+            s_train, s_test = forecast(train, use[test])
+        else:
+            s_train, s_test = forecast(train, train), forecast(train, use[test])
+        s_train = np.asarray(s_train, dtype=float)
+        out.loc[test, "score"] = np.asarray(s_test, dtype=float)
         for a in ALARM_SHARES:
             out.loc[test, f"alarm@{a:g}"] = out.loc[test, "score"] > np.quantile(s_train, 1 - a)
     return out
