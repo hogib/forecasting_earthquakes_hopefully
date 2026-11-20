@@ -26,7 +26,9 @@ on their own (zero-phase Butterworth), and pieces shorter than MIN_PIECE seconds
 days is filtered in blocks of CHUNK seconds, each with PAD seconds of the neighbouring signal on both sides that
 are thrown away afterwards, so midnight carries no edge effect: only the ends of a file and of a gap do.
 A band whose upper edge is not below 0.45 of the sampling rate is left NaN. The response of the instrument
-is not removed. Days already in the index are kept unless --overwrite. Exits nonzero when nothing is written.
+is not removed. Days already in the index are kept unless --overwrite, and the index is rewritten after every
+file, so a run that is stopped loses only the files in work and the next run goes on from there. Exits nonzero
+when nothing is written.
 """
 import argparse
 import datetime as dt
@@ -245,6 +247,12 @@ def main():
     print(f"{args.station}: {len(files)} files, {len(seen)} days, {held} held out and not read, {len(rows)} already built, "
           f"{todo} to build from {len(jobs)} files", flush=True)
 
+    def save_index(rows):
+        index = pd.DataFrame(rows).sort_values("date")
+        index.to_csv(index_file.with_suffix(".tmp"), index=False)
+        os.replace(index_file.with_suffix(".tmp"), index_file)
+        return index
+
     t0, failed, done = time.time(), [], 0
     with ProcessPoolExecutor(args.jobs) as pool:
         for job, res in zip(jobs, pool.map(one_file, jobs)):
@@ -253,15 +261,14 @@ def main():
                 print(f"[FAILED] {Path(job[0]).name}: {res}", flush=True)
             else:
                 rows += res
+                save_index(rows)                       # after every file: a stopped run can go on from here
             done += len(job[5])
             rate = done / (time.time() - t0)
             print(f"{args.station} {done}/{todo} days | {rate:.2f} days/s | ETA {(todo - done) / rate / 60:.1f} min", flush=True)
 
     if not rows:
         sys.exit(f"{args.station}: nothing was written")
-    index = pd.DataFrame(rows).sort_values("date")
-    index.to_csv(index_file.with_suffix(".tmp"), index=False)
-    os.replace(index_file.with_suffix(".tmp"), index_file)
+    index = save_index(rows)
     import obspy
     import scipy
     (out / "provenance.json").write_text(json.dumps(dict(

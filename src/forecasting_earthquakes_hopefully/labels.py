@@ -1,6 +1,8 @@
 """The label of every station-day that has an envelope: the answer to the question of protocol.py.
 
     uv run python -m forecasting_earthquakes_hopefully.labels ENVELOPES_DIR OUT_DIR
+    uv run python -m forecasting_earthquakes_hopefully.labels survey/stretches.csv OUT_DIR     (before the envelopes exist:
+                                         the days come from the file names of the survey, held-out days left out)
 
 For a station, the events of the question are those of catalog/events.csv with magnitude >= MIN_MAGNITUDE within
 RADIUS_KM. One of them counts (is the first large event of a sequence) when no other lies within RADIUS_KM of
@@ -80,14 +82,22 @@ def main():
     args = ap.parse_args()
     events = pd.read_csv(protocol.CATALOG / "events.csv", parse_dates=["time"])
     stations = pd.read_csv(protocol.CATALOG / "stations.csv").drop_duplicates("code")
-    have = sorted(p.parent.name for p in args.envelopes.glob("*/index.csv"))
+    if args.envelopes.is_file():                    # the stretches of the survey
+        days_of = {}
+        for r in pd.read_csv(args.envelopes, parse_dates=["first", "last"]).itertuples():
+            days_of.setdefault(r.station, set()).update(
+                d.date().isoformat() for d in pd.date_range(r.first, r.last) if not split.held_out(r.station, d.date()))
+        days_of = {s: sorted(d) for s, d in days_of.items()}
+    else:
+        days_of = {p.parent.name: list(pd.read_csv(p)["date"]) for p in args.envelopes.glob("*/index.csv")}
+    have = sorted(days_of)
     stations = stations[stations["code"].isin(have) & ~stations["code"].isin(protocol.held_out_stations())]
     seqs = {r: sequences(r, stations, events) for r in sorted({split.region_of(c) for c in stations["code"]})}
     name = lambda r, s: f"{r}-{s[0]:%Y-%m}"
     rows = []
     for s in stations.itertuples():
         region, near = split.region_of(s.code), station_events(s.latitude, s.longitude, events)
-        for day in pd.read_csv(args.envelopes / s.code / "index.csv")["date"]:
+        for day in days_of[s.code]:
             day = dt.date.fromisoformat(day)
             if split.held_out(s.code, day):
                 sys.exit(f"{s.code} {day}: a held-out day has an envelope")
