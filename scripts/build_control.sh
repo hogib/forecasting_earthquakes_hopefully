@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Pause, resume or stop the envelope build that scripts/build_envelopes_zne.sh started with setsid.
+# Pause, resume or stop a run of this repository that was started with setsid and wrote its process group
+# to OUT_DIR/build.pgid: the envelope build of scripts/build_envelopes_zne.sh or a training run.
 # usage: scripts/build_control.sh OUT_DIR pause|resume|stop|status
 #   pause   freezes every process of the build: the processor is free at once, the memory stays taken
 #   resume  lets a paused build go on
@@ -7,7 +8,7 @@
 #           and starting the build again with the same command goes on from there
 set -u
 G=$(cat "$1/build.pgid") || exit 1
-if ! ps -o args= -g "$G" | grep -q build_envelopes_zne; then echo "no build is running in group $G"; exit 1; fi
+if ! ps -o args= -g "$G" | grep -q -E "build_envelopes_zne|forecasting_earthquakes_hopefully"; then echo "no build is running in group $G"; exit 1; fi
 case $2 in
   pause)  kill -STOP -- "-$G" && echo "paused" ;;
   resume) kill -CONT -- "-$G" && echo "resumed" ;;

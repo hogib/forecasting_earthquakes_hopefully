@@ -1,14 +1,17 @@
 """The input of the classifier: for a station and a day, the DAYS days that end on that day.
 
 Every window is put on its own scale: per channel the median and the spread (1.4826 * MAD, at least
-MIN_SPREAD) of the first BASE_DAYS days of the window, and every value becomes (value - median) / spread,
-cut at +-CLIP. So the model sees how the last two weeks differ from the two weeks before them, and nothing
-that tells one station or one instrument from another by its level. No day outside the window is used, so
-nothing of a left-out sequence leaks in through the scale.
+MIN_SPREAD) of its base days, and every value becomes (value - median) / spread, cut at +-CLIP. The base
+days are the BASE_DAYS nearest present days before the last DAYS - BASE_DAYS days of the window, looked for
+up to BASE_BACK days back: the first BASE_DAYS days of the window when they are all there, older days where
+a held-out block or a gap took them. So the model sees how the last two weeks differ from the weeks before
+them, and nothing that tells one station or one instrument from another by its level. Only days before the
+forecast day are used, at most SPAN days of them, and train.py keeps that distance from a left-out day.
 
 A day counts as present when at least MIN_DAY of its minutes have every chosen component. A window is used
-when its last day is present, at least MIN_BASE of the base days and at least MIN_PRESENT days in all.
-Held-out days have no summary and are simply missing.
+when its last day is present, at least MIN_BASE base days are found and at least MIN_PRESENT days in all
+(the base days and the present ones of the last DAYS - BASE_DAYS). Held-out days have no summary and are
+simply missing.
 
     uv run python -m forecasting_earthquakes_hopefully.windows MINUTES_DIR LABELS_CSV OUT_CSV
 
@@ -31,6 +34,8 @@ from .minutes import COMPONENTS, MINUTES
 
 DAYS = 28
 BASE_DAYS = 14
+BASE_BACK = 42        # days before the last DAYS - BASE_DAYS in which the base days are looked for
+SPAN = DAYS - BASE_DAYS + BASE_BACK   # the days before and with the forecast day that a window can touch
 MIN_BASE = 5
 MIN_PRESENT = 14
 MIN_DAY = 0.5
@@ -62,12 +67,15 @@ class Windows:
             for r in part.itertuples():
                 day = r.date if isinstance(r.date, dt.date) else dt.date.fromisoformat(r.date)
                 idx = np.array([row_of.get(day - dt.timedelta(days=DAYS - 1 - k), -1) for k in range(DAYS)])
-                why = ("last_day_missing" if idx[-1] < 0 else "base_too_short" if (idx[:BASE_DAYS] >= 0).sum() < MIN_BASE
-                       else "too_few_days" if (idx >= 0).sum() < MIN_PRESENT else None)
+                last = DAYS - BASE_DAYS
+                back = [row_of.get(day - dt.timedelta(days=last + k), -1) for k in range(BASE_BACK)]
+                found = np.array([i for i in back if i >= 0][:BASE_DAYS], dtype=int)
+                why = ("last_day_missing" if idx[-1] < 0 else "base_too_short" if len(found) < MIN_BASE
+                       else "too_few_days" if len(found) + (idx[BASE_DAYS:] >= 0).sum() < MIN_PRESENT else None)
                 if why:
                     self.skipped[why] += 1
                     continue
-                base = x[idx[:BASE_DAYS][idx[:BASE_DAYS] >= 0]]
+                base = x[found]
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", RuntimeWarning)
                     med = np.nanmedian(base, axis=(0, 2))

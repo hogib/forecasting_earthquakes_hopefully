@@ -4,7 +4,8 @@
         [--components ZNE] [--pretrain-epochs 10] [--epochs 30] [--only GROUP] [--seed 0]
 
 For every group of labels.csv (score.py): the windows of the other groups are the training set, without those
-of a station that end within EMBARGO_DAYS days of a left-out day of the same station (their days would overlap).
+of a station that end within EMBARGO_DAYS days of a left-out day of the same station (their input or base
+days would overlap).
 On the training set alone:
 
   1. the day encoder is pretrained without labels (encoder.Reconstructor) for --pretrain-epochs epochs;
@@ -38,9 +39,9 @@ from torch import nn
 from . import score
 from .encoder import Classifier, DayEncoder, Reconstructor
 from .survey import commit
-from .windows import DAYS, Windows, read_labels
+from .windows import DAYS, SPAN, Windows, read_labels
 
-EMBARGO_DAYS = DAYS
+EMBARGO_DAYS = SPAN         # a window touches at most this many days: input and base days
 WIDTH = 64
 PRETRAIN_WINDOWS = 8        # windows per pretraining step
 PRETRAIN_DAYS = 8           # days drawn from each of them

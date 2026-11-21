@@ -71,8 +71,8 @@ def test_models_have_the_right_shapes_and_the_hidden_part_is_not_seen():
 
 def test_the_embargo_drops_training_windows_next_to_left_out_days():
     day = lambda i: dt.date(2021, 1, 1) + dt.timedelta(days=i)
-    tr = pd.DataFrame(dict(station=["A", "A", "A", "B"], date=[day(0), day(40), day(80), day(41)]))
-    te = pd.DataFrame(dict(station=["A", "A"], date=[day(50), day(60)]))
+    tr = pd.DataFrame(dict(station=["A", "A", "A", "B"], date=[day(0), day(70), day(120), day(71)]))
+    te = pd.DataFrame(dict(station=["A", "A"], date=[day(100), day(110)]))
     assert train.embargoed(tr, te).tolist() == [False, True, True, False]
 
 
