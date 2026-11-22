@@ -48,3 +48,21 @@ def test_stretch_recovers_a_velocity_change():
 def test_eras_split_at_long_holes():
     day = lambda k: dt.date(2020, 1, 1) + dt.timedelta(days=k)
     assert velocity.eras([day(0), day(1), day(100), day(400), day(401)]) == [[0, 1, 2], [3, 4]]
+
+
+def test_forecast_features_use_the_past_only_and_find_a_change():
+    rng = np.random.default_rng(3)
+    n = 2 * correlations.MAX_LAG * correlations.FS + 1
+    t = (np.arange(n) - (n - 1) / 2) / correlations.FS
+    fine = np.linspace(t[0] * 1.1, t[-1] * 1.1, 40 * n)
+    wave = sosfiltfilt(butter(4, (0.5, 4), btype="bandpass", fs=40 * correlations.FS / 1.1, output="sos"), rng.normal(size=len(fine)))
+    dates = [dt.date(2020, 1, 1) + dt.timedelta(days=k) for k in range(80)]
+    speed = [0.0 if k < 70 else 0.005 for k in range(80)]          # 0.5 % faster from day 70 on
+    corr = np.stack([np.stack([np.interp(t * (1 + s), fine, wave)] * 3) for s in speed])
+    got = velocity.forecast_features(dates, corr)
+    assert dates[32] not in got and dates[33] in got                 # 14 recent days and MIN_BASE base days
+    assert abs(got[dates[69]]["dvv14_1-2"]) < 0.02 and got[dates[79]]["dvv5_1-2"] > 0.4
+    later = corr.copy()
+    later[75:] = rng.normal(size=later[75:].shape)                   # the future changes, the past features do not
+    again = velocity.forecast_features(dates, later)
+    assert again[dates[72]] == got[dates[72]]

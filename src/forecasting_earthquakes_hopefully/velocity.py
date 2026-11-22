@@ -1,6 +1,7 @@
 """Changes of the seismic velocity around a station, day by day, from the correlations of correlations.py.
 
     uv run python -m forecasting_earthquakes_hopefully.velocity CORRELATIONS_DIR OUT.csv [--reference-until DATE]
+    uv run python -m forecasting_earthquakes_hopefully.velocity CORRELATIONS_DIR OUT.csv --forecast
 
 The late part of a noise correlation is made of waves that wandered around the station. When the velocity of
 the rock changes by a share dv/v, every one of them arrives earlier or later by the same share of its travel
@@ -12,6 +13,15 @@ components:
               instrument may have changed), or over those up to --reference-until
   dv/v        the stretch e that makes reference(lag * (1 + e)) most like current, searched over +-MAX_STRETCH
               on the lags from LAGS[0] to LAGS[1] seconds of both sides, with the correlation coefficient there
+
+With --forecast it writes instead the features of a forecast made on a day d, from days up to d only, for
+rivals.py --features. For every band of BANDS and n in RECENT:
+
+  dvv<n>_<band>   the stretch, in percent, of the mean correlation of the days d-n+1..d against the mean of the
+                  days d-n-BASE_DAYS+1..d-n: how the velocity changed over the last n days against the weeks
+                  before. A reference this close follows the season, so the slow yearly cycle mostly cancels.
+
+A day has a value when at least half of its recent days and MIN_BASE of its base days have a correlation.
 
 The pairs of a day are averaged with weights cc^2. The reference without --reference-until is taken from all
 days of the era, later ones included: fine for looking at what an earthquake did, not for a forecast, where
@@ -44,6 +54,9 @@ ERA_GAP = 180               # days
 MAX_STRETCH = 0.03
 STEPS = 241                 # stretches tried: steps of 0.025 percent
 MIN_REFERENCE = 20          # days
+RECENT = (5, 14)            # days compared, --forecast
+BASE_DAYS = 42              # days before them they are compared with
+MIN_BASE = 20
 
 
 def stretch(reference, current, lags):
@@ -102,12 +115,41 @@ def station_velocity(dates, corr, until=None):
     return rows
 
 
+def forecast_features(dates, corr):
+    """dates (sorted datetime.date) and corr (n, pairs, lags) of one station -> {date: {column: value}} for the
+    days that have every column; each value uses the days up to its date only."""
+    t = (np.arange(corr.shape[2]) - (corr.shape[2] - 1) / 2) / FS
+    keep = (np.abs(t) >= LAGS[0]) & (np.abs(t) <= LAGS[1])
+    ordinal = np.array([d.toordinal() for d in dates])
+    out, columns = {}, 0
+    for low, high in BANDS:
+        band = sosfiltfilt(butter(4, (low, high), btype="bandpass", fs=FS, output="sos"), corr, axis=2)
+        for n in RECENT:
+            columns += 1
+            name = f"dvv{n}_{low:g}-{high:g}"
+            for i, day in enumerate(dates):
+                age = ordinal[i] - ordinal[:i + 1]                      # days up to d only
+                recent = np.where(age < n)[0]
+                base = np.where((age >= n) & (age < n + BASE_DAYS))[0]
+                if len(recent) < (n + 1) // 2 or len(base) < MIN_BASE:
+                    continue
+                current, reference = band[recent].mean(axis=0), band[base].mean(axis=0)
+                found = [stretch(reference[p], current[p], keep) for p in range(len(PAIRS))]
+                w = np.array([max(cc, 0) ** 2 for _, cc in found])
+                if w.sum() > 0:
+                    out.setdefault(day, {})[name] = round(100 * float(np.dot(w, [e for e, _ in found]) / w.sum()), 4)
+    return {d: v for d, v in out.items() if len(v) == columns}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("correlations", type=Path)
     ap.add_argument("out", type=Path)
     ap.add_argument("--reference-until", type=dt.date.fromisoformat)
+    ap.add_argument("--forecast", action="store_true", help="the features of a forecast instead of the series")
     args = ap.parse_args()
+    if args.forecast:
+        return forecast_main(args)
     rows, inputs = [], {}
     for index in sorted(args.correlations.glob("*/index.csv")):
         station = index.parent.name
@@ -130,6 +172,28 @@ def main():
                         reference_until=args.reference_until.isoformat() if args.reference_until else None),
         inputs=inputs, versions=dict(numpy=np.__version__, pandas=pd.__version__), rows=len(rows)), indent=1))
     print(f"{len(rows)} values -> {args.out}")
+
+
+def forecast_main(args):
+    rows, inputs = [], {}
+    for index in sorted(args.correlations.glob("*/index.csv")):
+        station = index.parent.name
+        dates = sorted(dt.date.fromisoformat(d) for d in pd.read_csv(index)["date"])
+        corr = np.stack([np.load(index.parent / f"{d.isoformat()}.npy") for d in dates])
+        got = forecast_features(dates, corr)
+        rows += [dict(station=station, date=d.isoformat(), **v) for d, v in sorted(got.items())]
+        inputs[str(index)] = hashlib.sha256(index.read_bytes()).hexdigest()
+        print(f"{station}: {len(dates)} days with a correlation, {len(got)} with the features", flush=True)
+    if not rows:
+        sys.exit("no day with the features: nothing written")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(args.out, index=False, lineterminator="\n")
+    args.out.with_suffix(".provenance.json").write_text(json.dumps(dict(
+        argv=sys.argv, written=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), commit=commit(),
+        parameters=dict(bands=BANDS, lags=LAGS, recent=RECENT, base_days=BASE_DAYS, min_base=MIN_BASE,
+                        max_stretch=MAX_STRETCH, steps=STEPS),
+        inputs=inputs, versions=dict(numpy=np.__version__, pandas=pd.__version__), rows=len(rows)), indent=1))
+    print(f"{len(rows)} station-days -> {args.out}")
 
 
 if __name__ == "__main__":
