@@ -80,7 +80,7 @@ def name(region, seq):
 
 
 def table(days_of, stations, events, min_magnitude=protocol.MIN_MAGNITUDE, radius_km=protocol.RADIUS_KM,
-          lead_days=protocol.LEAD_DAYS):
+          lead_days=protocol.LEAD_DAYS, before_only=False):
     """(the label table, the sequences per region) for the days of days_of: {station: [iso dates]}."""
     seqs = {r: sequences(r, stations, events, min_magnitude, radius_km)
             for r in sorted({split.region_of(c) for c in stations["code"]})}
@@ -94,6 +94,8 @@ def table(days_of, stations, events, min_magnitude=protocol.MIN_MAGNITUDE, radiu
                 sys.exit(f"{s.code} {day}: a held-out day has an envelope")
             label, dropped, eid, ahead = label_day(day, near, lead_days)
             seq = min(seqs[region], key=lambda q: abs((q[0].date() - day).days)) if seqs[region] else None
+            if before_only and seq and day > seq[0].date():
+                label, dropped, eid, ahead = 0, True, "", ""
             rows.append(dict(station=s.code, region=region, date=day.isoformat(), label=label, dropped=int(dropped),
                              event_id=eid, days_to_event=ahead, group=name(region, seq) if seq else f"{region}-none"))
     return pd.DataFrame(rows), seqs
@@ -123,13 +125,17 @@ def main():
     ap.add_argument("--min-magnitude", type=float, default=protocol.MIN_MAGNITUDE)
     ap.add_argument("--radius-km", type=float, default=protocol.RADIUS_KM)
     ap.add_argument("--lead-days", type=int, default=protocol.LEAD_DAYS)
+    ap.add_argument("--before-only", action="store_true",
+                    help="also drop every day after the first event of its group: no day that follows a sequence is "
+                         "trained on or scored, so a forecast cannot gain from telling before from long after")
     args = ap.parse_args()
     events = pd.read_csv(protocol.CATALOG / "events.csv", parse_dates=["time"])
     if args.min_magnitude < events["magnitude"].min():
         sys.exit(f"catalog/events.csv starts at magnitude {events['magnitude'].min()}: nothing written")
     days_of = read_days(args.envelopes)
     have = sorted(days_of)
-    tab, seqs = table(days_of, read_stations(have), events, args.min_magnitude, args.radius_km, args.lead_days)
+    tab, seqs = table(days_of, read_stations(have), events, args.min_magnitude, args.radius_km, args.lead_days,
+                      args.before_only)
     if not len(tab):
         sys.exit("no station-day found: nothing written")
     args.out.mkdir(parents=True, exist_ok=True)
@@ -143,7 +149,7 @@ def main():
     (args.out / "provenance.json").write_text(json.dumps(dict(
         argv=sys.argv, written=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), commit=commit(),
         parameters=dict(min_magnitude=args.min_magnitude, radius_km=args.radius_km, lead_days=args.lead_days,
-                        clean_days=protocol.CLEAN_DAYS),
+                        clean_days=protocol.CLEAN_DAYS, before_only=args.before_only),
         inputs={f: sha(protocol.CATALOG / f) for f in ("events.csv", "stations.csv", "held_out_days_previous.csv")},
         versions=dict(pandas=pd.__version__), stations=have,
         rows=len(tab), positive=int(tab["label"].sum()), dropped=int(tab["dropped"].sum())), indent=1))

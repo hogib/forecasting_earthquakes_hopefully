@@ -13,6 +13,8 @@ groups; the scores of all the left-out groups together are judged on the days th
   pairs@a      of the (station, event) pairs, how many have the alarm on at least half of their positive days
 
 A forecast that knows nothing has auc 0.5 and recall equal to alarm.
+
+by_group() and by_station() give days, positive days, auc, recall and alarm per left-out group and per station.
 """
 import numpy as np
 import pandas as pd
@@ -67,12 +69,47 @@ def summary(scored):
     return row
 
 
-def by_group(scored, share=0.10):
-    """Per left-out group: days, positive days, auc inside the group, recall and alarm share at `share`."""
+def by(scored, column, share=0.10):
+    """Per value of `column`: days, positive days, auc inside it, recall and alarm share at `share`."""
     c, rows = f"alarm@{share:g}", []
-    for g, r in scored.groupby("group"):
+    for g, r in scored.groupby(column):
         pos, neg = r[r["label"] == 1], r[r["label"] == 0]
-        rows.append(dict(group=g, days=len(r), positive=len(pos), auc=round(auc(r["score"], r["label"]), 3),
-                         recall=round(float(pos[c].mean()), 3) if len(pos) else float("nan"),
-                         alarm=round(float(neg[c].mean()), 3) if len(neg) else float("nan")))
+        rows.append({column: g, "days": len(r), "positive": len(pos), "auc": round(auc(r["score"], r["label"]), 3),
+                     "recall": round(float(pos[c].mean()), 3) if len(pos) else float("nan"),
+                     "alarm": round(float(neg[c].mean()), 3) if len(neg) else float("nan")})
     return pd.DataFrame(rows)
+
+
+def by_group(scored, share=0.10):
+    """Per left-out group."""
+    return by(scored, "group", share)
+
+
+def by_station(scored, share=0.10):
+    """Per station, with its region and the number of groups it has positive days in. A station's days come from
+    several folds, so its auc compares scores of different fitted models: a description, not a test. Most
+    stations have the positive days of one earthquake."""
+    out = by(scored, "station", share)
+    first = scored.groupby("station")["region"].first()
+    groups = scored[scored["label"] == 1].groupby("station")["group"].nunique()
+    out.insert(0, "region", out["station"].map(first))
+    out.insert(4, "groups_positive", out["station"].map(groups).fillna(0).astype(int))
+    return out.sort_values(["region", "station"]).reset_index(drop=True)
+
+
+def main():
+    """python -m forecasting_earthquakes_hopefully.score SCORES_CSV ...: write stations.csv beside each scores.csv
+    of train.py (for runs made before train.py wrote it)."""
+    import sys
+    from pathlib import Path
+    for path in map(Path, sys.argv[1:]):
+        scored = pd.read_csv(path, keep_default_na=False)
+        scored["score"] = scored["score"].astype(float)
+        by_station(scored).to_csv(path.with_name("stations.csv"), index=False, lineterminator="\n")
+        print(f"{path.with_name('stations.csv')}")
+    if len(sys.argv) < 2:
+        sys.exit("usage: python -m forecasting_earthquakes_hopefully.score SCORES_CSV ...")
+
+
+if __name__ == "__main__":
+    main()

@@ -85,3 +85,34 @@ def test_a_planted_signal_is_found_end_to_end(tmp_path):
     assert (out / "DONE").exists() and "ETA" in r.stdout
     s = pd.read_csv(out / "summary.csv").iloc[0]
     assert s["auc"] > 0.8, r.stdout[-1500:]
+
+
+def test_neighbours_pool_the_other_stations_of_the_day():
+    table = pd.DataFrame(dict(region=["a", "a", "a", "b"], date=[1, 1, 2, 1]))
+    vec = {0: torch.ones(3, 4), 1: 3 * torch.ones(3, 4), 2: torch.ones(3, 4), 3: torch.ones(3, 4)}
+    pres = {r: torch.ones(3) for r in range(4)}
+    pres[1] = torch.tensor([1.0, 0.0, 1.0])
+    out = train.neighbours(table, [0, 1, 2, 3], vec, pres)
+    assert out[0].shape == (3, 9)
+    assert out[0][0].tolist() == [3.0] * 8 + [1.0] and out[0][1].tolist() == [0.0] * 9      # station 1 absent on day 1
+    assert out[1][0].tolist() == [1.0] * 8 + [1.0]
+    assert out[2].abs().sum() == 0 and out[3].abs().sum() == 0                              # nobody else that day
+    assert encoder.Classifier(4, extra=9)(torch.randn(2, 3, 4), torch.ones(2, 3), torch.randn(2, 3, 9)).shape == (2,)
+
+
+def test_by_station_counts_per_station():
+    from forecasting_earthquakes_hopefully import score
+    s = pd.DataFrame(dict(station=["A", "A", "A", "B", "B"], region=["r"] * 5, group=["g1", "g1", "g2", "g1", "g1"],
+                          label=[1, 0, 0, 0, 0], score=[2.0, 1.0, 0.0, 5.0, 4.0]))
+    s["alarm@0.1"] = [True, False, True, False, False]
+    out = score.by_station(s).set_index("station")
+    assert out.loc["A", ["days", "positive", "groups_positive", "auc", "recall", "alarm"]].tolist() == [3, 1, 1, 1.0, 1.0, 0.5]
+    assert out.loc["B", "positive"] == 0 and np.isnan(out.loc["B", "auc"]) and out.loc["B", "alarm"] == 0.0
+
+
+def test_shape_ignores_loudness():
+    from forecasting_earthquakes_hopefully import day_cnn
+    x = np.random.default_rng(0).normal(size=(2, 30, 8))
+    louder = x + 1.7                                        # every envelope 50 times larger: log10 shifts by a constant
+    assert np.allclose(day_cnn.shape(x), day_cnn.shape(louder))
+    assert not np.allclose(day_cnn.shape(x)[:, :15], 0)

@@ -58,13 +58,14 @@ class Reconstructor(nn.Module):
 
 
 class Classifier(nn.Module):
-    def __init__(self, width=64, hidden=32, dropout=0.2):
+    def __init__(self, width=64, hidden=32, dropout=0.2, extra=0):
         super().__init__()
-        self.gru = nn.GRU(width + 1, hidden, batch_first=True)
+        self.gru = nn.GRU(width + 1 + extra, hidden, batch_first=True)
         self.drop = nn.Dropout(dropout)
         self.head = nn.Linear(hidden, 1)
 
-    def forward(self, v, present):
-        """v (B, days, width) the day vectors, present (B, days) 0/1 -> (B,) logits."""
+    def forward(self, v, present, more=None):
+        """v (B, days, width) the day vectors, present (B, days) 0/1, more (B, days, extra) or None -> (B,) logits."""
         p = present[..., None].to(v.dtype)
-        return self.head(self.drop(self.gru(torch.cat([v * p, p], dim=-1))[0][:, -1])).squeeze(-1)
+        x = [v * p, p] if more is None else [v * p, p, more]
+        return self.head(self.drop(self.gru(torch.cat(x, dim=-1))[0][:, -1])).squeeze(-1)

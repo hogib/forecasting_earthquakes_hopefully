@@ -83,9 +83,10 @@ class Windows:
                 if not np.isfinite(med).all():
                     self.skipped["base_too_short"] += 1
                     continue
-                rows.append((r.Index, idx, med.astype(np.float32), np.maximum(mad, MIN_SPREAD).astype(np.float32)))
+                rows.append((r.Index, idx, med.astype(np.float32), np.maximum(mad, MIN_SPREAD).astype(np.float32), found))
         self.table = labels.loc[[r[0] for r in rows]].reset_index(drop=True)
         self.idx = [r[1] for r in rows]
+        self.base = [r[4] for r in rows]                     # rows of the station's days the scale was taken from
         self.med = np.stack([r[2] for r in rows]) if rows else np.zeros((0, self.features), np.float32)
         self.spread = np.stack([r[3] for r in rows]) if rows else np.zeros((0, self.features), np.float32)
 

@@ -11,12 +11,16 @@
   station      the share of positive days of the station among the training days: knowing only where you are
   --features   a table with station, date and feature columns (for instance the loudness per band); each
                column prefix before the first "_" becomes one more rival: logistic regression on its columns
+  --combine    NAME=COLUMN,COLUMN ...: logistic regression on several columns together, those of --features
+               and `small` (the small-event count) among them. A column of scores from a classifier has to be
+               out of fold itself: the scores of a day from the model that never saw the day's sequence
 
 Every rival is fitted on the other sequences and scored on the one left out (score.py).
 
   OUT_DIR/rivals.csv         one row per rival: the numbers of score.summary
   OUT_DIR/rivals_groups.csv  per rival and left-out sequence (alarm share 0.10)
-  OUT_DIR/scores.csv         station, date, label, group and the out-of-fold score of every rival
+  OUT_DIR/rivals_stations.csv  per rival and station (score.by_station)
+  OUT_DIR/scores.csv         station, date, label, group and the out-of-fold score of every rival as score_<rival>
   OUT_DIR/provenance.json
 """
 import argparse
@@ -86,6 +90,8 @@ def main():
     ap.add_argument("small_events", type=Path)
     ap.add_argument("out", type=Path)
     ap.add_argument("--features", type=Path)
+    ap.add_argument("--combine", nargs="*", default=[], metavar="NAME=COLUMN,COLUMN",
+                    help="one more forecast per item: logistic regression on these columns together")
     args = ap.parse_args()
     table = pd.read_csv(args.labels, keep_default_na=False)
     table["date"] = pd.to_datetime(table["date"]).dt.date
@@ -105,17 +111,22 @@ def main():
         for prefix in sorted({c.split("_")[0] for c in names}):
             rivals[prefix] = logistic([c for c in names if c.split("_")[0] == prefix])
         inputs.append(args.features)
+    for item in args.combine:
+        name, columns = item.split("=")
+        rivals[name] = logistic(columns.split(","))
     if not len(table) or table["label"].sum() == 0:
         sys.exit("no day or no positive day: nothing written")
-    rows, groups, scores = [], [], table[table["dropped"] == 0][["station", "region", "date", "label", "group", "event_id"]].reset_index(drop=True)
+    rows, groups, stations, scores = [], [], [], table[table["dropped"] == 0][["station", "region", "date", "label", "group", "event_id"]].reset_index(drop=True)
     for name, forecast in rivals.items():
         scored = score.out_of_fold(table, forecast)
         rows.append(dict(rival=name, **score.summary(scored)))
         groups.append(score.by_group(scored).assign(rival=name))
-        scores[name] = scored["score"].to_numpy()
+        stations.append(score.by_station(scored).assign(rival=name))
+        scores[f"score_{name}"] = scored["score"].to_numpy()
     args.out.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(args.out / "rivals.csv", index=False, lineterminator="\n")
     pd.concat(groups).to_csv(args.out / "rivals_groups.csv", index=False, lineterminator="\n")
+    pd.concat(stations).to_csv(args.out / "rivals_stations.csv", index=False, lineterminator="\n")
     scores.to_csv(args.out / "scores.csv", index=False, lineterminator="\n")
     (args.out / "provenance.json").write_text(json.dumps(dict(
         argv=sys.argv, written=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), commit=commit(),

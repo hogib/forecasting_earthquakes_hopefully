@@ -1,7 +1,7 @@
 """The classifier of the question, one sequence left out at a time.
 
     uv run python -u -m forecasting_earthquakes_hopefully.train MINUTES_DIR LABELS_CSV OUT_DIR
-        [--components ZNE] [--pretrain-epochs 10] [--epochs 30] [--only GROUP] [--seed 0]
+        [--components ZNE] [--pretrain-epochs 10] [--epochs 30] [--only GROUP] [--seed 0] [--neighbours]
 
 For every group of labels.csv (score.py): the windows of the other groups are the training set, without those
 of a station that end within EMBARGO_DAYS days of a left-out day of the same station (their input or base
@@ -13,11 +13,16 @@ On the training set alone:
   2. the encoder is frozen and turns every day of every window into a vector
   3. the classifier (a GRU over the days) is trained on the labels, the positive days weighted up to balance
 
+With --neighbours the classifier also reads, for every day of the window, the mean and the maximum of the day
+vectors of the other stations of the region whose window ends on the same date, and whether there is any
+(neighbours()). Those stations are in the same group as the window, so nothing crosses the left-out group.
+
 then the windows of the left-out group are scored. Nothing is tuned on the left-out group: the settings
 are the constants below and the defaults of the command line, fixed before the first run.
 
   OUT_DIR/scores.csv     station, region, date, label, group, event_id, score, alarm@a
   OUT_DIR/summary.csv    the numbers of score.summary;  OUT_DIR/groups.csv  per left-out group
+  OUT_DIR/stations.csv   per station (score.by_station)
   OUT_DIR/run.json       command line, settings, commit, versions, counts, losses per fold
   OUT_DIR/fold_<group>.pt   encoder and classifier of the fold;  OUT_DIR/DONE at the end
 
@@ -67,6 +72,28 @@ def embargoed(train, test):
         i = np.clip(np.searchsorted(days, t), 0, len(days) - 1)
         near = np.minimum(np.abs(days[i] - t), np.abs(days[np.maximum(i - 1, 0)] - t))
         out[sel] = near < EMBARGO_DAYS
+    return out
+
+
+def neighbours(table, rows, vec, pres):
+    """{row: (days, 2 * width + 1)} for the rows: per day the mean and the maximum of the vectors of the other
+    rows with the same region and date, over those present that day, and 1 when there is one; else zeros."""
+    same = {}
+    for r in rows:
+        same.setdefault((table["region"].iloc[r], table["date"].iloc[r]), []).append(r)
+    out = {}
+    for group in same.values():
+        v, p = torch.stack([vec[r] for r in group]), torch.stack([pres[r] for r in group])[..., None]
+        for i, r in enumerate(group):
+            keep = [k for k in range(len(group)) if k != i]
+            if not keep:
+                out[r] = torch.zeros(v.shape[1], 2 * v.shape[2] + 1)
+                continue
+            vo, po = v[keep], p[keep]
+            n = po.sum(0)
+            mean = (vo * po).sum(0) / n.clamp(min=1)
+            top = torch.where(po > 0, vo, torch.full_like(vo, -torch.inf)).max(0).values
+            out[r] = torch.cat([mean, torch.where(n > 0, top, torch.zeros_like(top)), (n > 0).float()], dim=-1)
     return out
 
 
@@ -142,14 +169,16 @@ class Fold:
                 for i, r in enumerate(rows):
                     vec[r], pres[r] = v[i], p[i].float()
         print(f"{name} encoded {len(every)} windows in {time.time() - t0:.0f} s", flush=True)
-        stack = lambda rows: (torch.stack([vec[r] for r in rows]).to(self.device), torch.stack([pres[r] for r in rows]).to(self.device))
+        near = neighbours(self.w.table, every, vec, pres) if a.neighbours else None
+        stack = lambda rows: (torch.stack([vec[r] for r in rows]).to(self.device), torch.stack([pres[r] for r in rows]).to(self.device),
+                              torch.stack([near[r] for r in rows]).to(self.device) if near else None)
 
-        clf = Classifier(WIDTH).to(self.device)
+        clf = Classifier(WIDTH, extra=2 * WIDTH + 1 if near else 0).to(self.device)
         y = torch.tensor(fit["label"].to_numpy(), dtype=torch.float32, device=self.device)
         if y.sum() == 0:
             sys.exit(f"{name}: no positive window to train on")
         weight = (len(y) - y.sum()) / y.sum()
-        v_fit, p_fit = stack(rows_fit)
+        v_fit, p_fit, n_fit = stack(rows_fit)
         per_epoch = max(len(rows_fit) // BATCH, 1)
         steps = a.epochs * per_epoch
         opt = torch.optim.AdamW(clf.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
@@ -158,7 +187,7 @@ class Fold:
         clf.train()
         for step in range(1, steps + 1):
             k = torch.from_numpy(rng.choice(len(rows_fit), BATCH)).to(self.device)
-            loss = nn.functional.binary_cross_entropy_with_logits(clf(v_fit[k], p_fit[k]), y[k], pos_weight=weight)
+            loss = nn.functional.binary_cross_entropy_with_logits(clf(v_fit[k], p_fit[k], n_fit[k] if near else None), y[k], pos_weight=weight)
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -186,6 +215,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--only", help="leave out this group alone (a trial); the summary then covers that group only")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--neighbours", action="store_true", help="the classifier also reads the other stations of the region")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
     w = Windows(args.minutes, read_labels(args.labels), args.components)
@@ -211,6 +241,7 @@ def main():
     summary = score.summary(scored)
     pd.DataFrame([summary]).to_csv(args.out / "summary.csv", index=False, lineterminator="\n")
     score.by_group(scored).to_csv(args.out / "groups.csv", index=False, lineterminator="\n")
+    score.by_station(scored).to_csv(args.out / "stations.csv", index=False, lineterminator="\n")
     (args.out / "run.json").write_text(json.dumps(dict(
         argv=sys.argv, written=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), commit=commit(),
         settings={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
@@ -221,6 +252,7 @@ def main():
     (args.out / "DONE").touch()
     print(pd.DataFrame([summary]).to_string(index=False))
     print(score.by_group(scored).to_string(index=False))
+    print(score.by_station(scored).to_string(index=False))
     print("DONE", flush=True)
 
 
