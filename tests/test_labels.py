@@ -25,3 +25,11 @@ def test_label_and_dropped_days():
     assert day("2020-01-23") == (1, False, "e0", 1)
     assert day("2020-01-24")[1] and day("2020-03-25")[1]                 # the event day, 60 days after the second
     assert day("2020-03-26") == (0, False, "", "")
+
+
+def test_longer_drop_keeps_out_the_recovery():
+    near = labels.station_events(38.0, 38.0, events(("2020-01-24 17:55", 6.7, 38.1), ("2020-06-05 18:06", 5.1, 38.2)))
+    day = lambda s, n: labels.label_day(dt.date.fromisoformat(s), near, drop_days=n)
+    assert day("2020-05-25", protocol.CLEAN_DAYS) == (1, False, "e1", 11)     # 4 months after: a positive day
+    assert day("2020-05-25", 180)[1]                                          # inside 180 days: dropped
+    assert day("2020-12-02", 180)[1] and day("2020-12-03", 180) == (0, False, "", "")      # 180 and 181 days after e1

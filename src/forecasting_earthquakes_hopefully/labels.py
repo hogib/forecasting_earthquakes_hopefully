@@ -50,10 +50,11 @@ def station_events(lat, lon, events, min_magnitude=protocol.MIN_MAGNITUDE, radiu
     return near
 
 
-def label_day(day, near, lead_days=protocol.LEAD_DAYS):
-    """(label, dropped, event id, days to the event) of one day given station_events()."""
+def label_day(day, near, lead_days=protocol.LEAD_DAYS, drop_days=protocol.CLEAN_DAYS):
+    """(label, dropped, event id, days to the event) of one day given station_events(); a day up to drop_days
+    after an event is dropped."""
     for t, *_ in near:
-        if 0 <= (day - t.date()).days <= protocol.CLEAN_DAYS:
+        if 0 <= (day - t.date()).days <= drop_days:
             return 0, True, "", ""
     for t, eid, _, _, counts in near:
         ahead = (t.date() - day).days
@@ -80,7 +81,7 @@ def name(region, seq):
 
 
 def table(days_of, stations, events, min_magnitude=protocol.MIN_MAGNITUDE, radius_km=protocol.RADIUS_KM,
-          lead_days=protocol.LEAD_DAYS, before_only=False):
+          lead_days=protocol.LEAD_DAYS, before_only=False, drop_days=protocol.CLEAN_DAYS):
     """(the label table, the sequences per region) for the days of days_of: {station: [iso dates]}."""
     seqs = {r: sequences(r, stations, events, min_magnitude, radius_km)
             for r in sorted({split.region_of(c) for c in stations["code"]})}
@@ -92,7 +93,7 @@ def table(days_of, stations, events, min_magnitude=protocol.MIN_MAGNITUDE, radiu
             day = dt.date.fromisoformat(day)
             if split.held_out(s.code, day):
                 sys.exit(f"{s.code} {day}: a held-out day has an envelope")
-            label, dropped, eid, ahead = label_day(day, near, lead_days)
+            label, dropped, eid, ahead = label_day(day, near, lead_days, drop_days)
             seq = min(seqs[region], key=lambda q: abs((q[0].date() - day).days)) if seqs[region] else None
             if before_only and seq and day > seq[0].date():
                 label, dropped, eid, ahead = 0, True, "", ""
@@ -128,14 +129,19 @@ def main():
     ap.add_argument("--before-only", action="store_true",
                     help="also drop every day after the first event of its group: no day that follows a sequence is "
                          "trained on or scored, so a forecast cannot gain from telling before from long after")
+    ap.add_argument("--drop-days", type=int, default=protocol.CLEAN_DAYS,
+                    help="drop the days up to this many after an event of the question (default CLEAN_DAYS): longer "
+                         "keeps out the months in which the rock recovers from it")
     args = ap.parse_args()
+    if args.drop_days < protocol.CLEAN_DAYS:
+        sys.exit(f"--drop-days below CLEAN_DAYS ({protocol.CLEAN_DAYS}) would score days holding aftershocks: nothing written")
     events = pd.read_csv(protocol.CATALOG / "events.csv", parse_dates=["time"])
     if args.min_magnitude < events["magnitude"].min():
         sys.exit(f"catalog/events.csv starts at magnitude {events['magnitude'].min()}: nothing written")
     days_of = read_days(args.envelopes)
     have = sorted(days_of)
     tab, seqs = table(days_of, read_stations(have), events, args.min_magnitude, args.radius_km, args.lead_days,
-                      args.before_only)
+                      args.before_only, args.drop_days)
     if not len(tab):
         sys.exit("no station-day found: nothing written")
     args.out.mkdir(parents=True, exist_ok=True)
@@ -149,7 +155,7 @@ def main():
     (args.out / "provenance.json").write_text(json.dumps(dict(
         argv=sys.argv, written=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), commit=commit(),
         parameters=dict(min_magnitude=args.min_magnitude, radius_km=args.radius_km, lead_days=args.lead_days,
-                        clean_days=protocol.CLEAN_DAYS, before_only=args.before_only),
+                        clean_days=protocol.CLEAN_DAYS, before_only=args.before_only, drop_days=args.drop_days),
         inputs={f: sha(protocol.CATALOG / f) for f in ("events.csv", "stations.csv", "held_out_days_previous.csv")},
         versions=dict(pandas=pd.__version__), stations=have,
         rows=len(tab), positive=int(tab["label"].sum()), dropped=int(tab["dropped"].sum())), indent=1))
