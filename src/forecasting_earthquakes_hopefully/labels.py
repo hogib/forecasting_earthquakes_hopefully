@@ -37,12 +37,12 @@ from . import protocol, split
 from .survey import commit, km
 
 
-def station_events(lat, lon, events):
+def station_events(lat, lon, events, min_magnitude=protocol.MIN_MAGNITUDE, radius_km=protocol.RADIUS_KM):
     """The events of the question at a station, in time order: (time, id, magnitude, distance, counts)."""
     near = []
     for e in events.itertuples():
         d = km(lat, lon, e.latitude, e.longitude)
-        if e.magnitude >= protocol.MIN_MAGNITUDE and d <= protocol.RADIUS_KM:
+        if e.magnitude >= min_magnitude and d <= radius_km:
             near.append([e.time, e.id, e.magnitude, d])
     near.sort()
     for i, e in enumerate(near):
@@ -50,22 +50,22 @@ def station_events(lat, lon, events):
     return near
 
 
-def label_day(day, near):
+def label_day(day, near, lead_days=protocol.LEAD_DAYS):
     """(label, dropped, event id, days to the event) of one day given station_events()."""
     for t, *_ in near:
         if 0 <= (day - t.date()).days <= protocol.CLEAN_DAYS:
             return 0, True, "", ""
     for t, eid, _, _, counts in near:
         ahead = (t.date() - day).days
-        if counts and 1 <= ahead <= protocol.LEAD_DAYS:
+        if counts and 1 <= ahead <= lead_days:
             return 1, False, eid, ahead
     return 0, False, "", ""
 
 
-def sequences(region, stations, events):
+def sequences(region, stations, events, min_magnitude=protocol.MIN_MAGNITUDE, radius_km=protocol.RADIUS_KM):
     """The sequences of a region: lists of event times, chained while the gap is at most CLEAN_DAYS."""
     times = sorted({e[0] for s in stations.itertuples() if split.region_of(s.code) == region
-                    for e in station_events(s.latitude, s.longitude, events)})
+                    for e in station_events(s.latitude, s.longitude, events, min_magnitude, radius_km)})
     out = []
     for t in times:
         if out and (t - out[-1][-1]) <= pd.Timedelta(days=protocol.CLEAN_DAYS):
@@ -75,42 +75,66 @@ def sequences(region, stations, events):
     return out
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("envelopes", type=Path)
-    ap.add_argument("out", type=Path)
-    args = ap.parse_args()
-    events = pd.read_csv(protocol.CATALOG / "events.csv", parse_dates=["time"])
-    stations = pd.read_csv(protocol.CATALOG / "stations.csv").drop_duplicates("code")
-    if args.envelopes.is_file():                    # the stretches of the survey
-        days_of = {}
-        for r in pd.read_csv(args.envelopes, parse_dates=["first", "last"]).itertuples():
-            days_of.setdefault(r.station, set()).update(
-                d.date().isoformat() for d in pd.date_range(r.first, r.last) if not split.held_out(r.station, d.date()))
-        days_of = {s: sorted(d) for s, d in days_of.items()}
-    else:
-        days_of = {p.parent.name: list(pd.read_csv(p)["date"]) for p in args.envelopes.glob("*/index.csv")}
-    have = sorted(days_of)
-    stations = stations[stations["code"].isin(have) & ~stations["code"].isin(protocol.held_out_stations())]
-    seqs = {r: sequences(r, stations, events) for r in sorted({split.region_of(c) for c in stations["code"]})}
-    name = lambda r, s: f"{r}-{s[0]:%Y-%m}"
+def name(region, seq):
+    return f"{region}-{seq[0]:%Y-%m}"
+
+
+def table(days_of, stations, events, min_magnitude=protocol.MIN_MAGNITUDE, radius_km=protocol.RADIUS_KM,
+          lead_days=protocol.LEAD_DAYS):
+    """(the label table, the sequences per region) for the days of days_of: {station: [iso dates]}."""
+    seqs = {r: sequences(r, stations, events, min_magnitude, radius_km)
+            for r in sorted({split.region_of(c) for c in stations["code"]})}
     rows = []
     for s in stations.itertuples():
-        region, near = split.region_of(s.code), station_events(s.latitude, s.longitude, events)
+        region = split.region_of(s.code)
+        near = station_events(s.latitude, s.longitude, events, min_magnitude, radius_km)
         for day in days_of[s.code]:
             day = dt.date.fromisoformat(day)
             if split.held_out(s.code, day):
                 sys.exit(f"{s.code} {day}: a held-out day has an envelope")
-            label, dropped, eid, ahead = label_day(day, near)
+            label, dropped, eid, ahead = label_day(day, near, lead_days)
             seq = min(seqs[region], key=lambda q: abs((q[0].date() - day).days)) if seqs[region] else None
             rows.append(dict(station=s.code, region=region, date=day.isoformat(), label=label, dropped=int(dropped),
                              event_id=eid, days_to_event=ahead, group=name(region, seq) if seq else f"{region}-none"))
-    if not rows:
+    return pd.DataFrame(rows), seqs
+
+
+def read_days(envelopes):
+    """{station: sorted iso dates} from the survey's stretches file or from the index.csv files of the envelopes."""
+    if envelopes.is_file():
+        days_of = {}
+        for r in pd.read_csv(envelopes, parse_dates=["first", "last"]).itertuples():
+            days_of.setdefault(r.station, set()).update(
+                d.date().isoformat() for d in pd.date_range(r.first, r.last) if not split.held_out(r.station, d.date()))
+        return {s: sorted(d) for s, d in days_of.items()}
+    return {p.parent.name: list(pd.read_csv(p)["date"]) for p in envelopes.glob("*/index.csv")}
+
+
+def read_stations(have):
+    """The stations of the catalogue that have days and are not held out."""
+    stations = pd.read_csv(protocol.CATALOG / "stations.csv").drop_duplicates("code")
+    return stations[stations["code"].isin(have) & ~stations["code"].isin(protocol.held_out_stations())]
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("envelopes", type=Path)
+    ap.add_argument("out", type=Path)
+    ap.add_argument("--min-magnitude", type=float, default=protocol.MIN_MAGNITUDE)
+    ap.add_argument("--radius-km", type=float, default=protocol.RADIUS_KM)
+    ap.add_argument("--lead-days", type=int, default=protocol.LEAD_DAYS)
+    args = ap.parse_args()
+    events = pd.read_csv(protocol.CATALOG / "events.csv", parse_dates=["time"])
+    if args.min_magnitude < events["magnitude"].min():
+        sys.exit(f"catalog/events.csv starts at magnitude {events['magnitude'].min()}: nothing written")
+    days_of = read_days(args.envelopes)
+    have = sorted(days_of)
+    tab, seqs = table(days_of, read_stations(have), events, args.min_magnitude, args.radius_km, args.lead_days)
+    if not len(tab):
         sys.exit("no station-day found: nothing written")
     args.out.mkdir(parents=True, exist_ok=True)
-    table = pd.DataFrame(rows)
-    table.to_csv(args.out / "labels.csv", index=False, lineterminator="\n")
-    pos = table[table["label"] == 1]
+    tab.to_csv(args.out / "labels.csv", index=False, lineterminator="\n")
+    pos = tab[tab["label"] == 1]
     pd.DataFrame([dict(region=r, group=name(r, q), first=q[0].isoformat(), last=q[-1].isoformat(), events=len(q),
                        positive_days=int((pos["group"] == name(r, q)).sum()),
                        stations=" ".join(sorted(pos[pos["group"] == name(r, q)]["station"].unique())))
@@ -118,13 +142,13 @@ def main():
     sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
     (args.out / "provenance.json").write_text(json.dumps(dict(
         argv=sys.argv, written=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), commit=commit(),
-        parameters=dict(min_magnitude=protocol.MIN_MAGNITUDE, radius_km=protocol.RADIUS_KM, lead_days=protocol.LEAD_DAYS,
+        parameters=dict(min_magnitude=args.min_magnitude, radius_km=args.radius_km, lead_days=args.lead_days,
                         clean_days=protocol.CLEAN_DAYS),
         inputs={f: sha(protocol.CATALOG / f) for f in ("events.csv", "stations.csv", "held_out_days_previous.csv")},
         versions=dict(pandas=pd.__version__), stations=have,
-        rows=len(table), positive=int(table["label"].sum()), dropped=int(table["dropped"].sum())), indent=1))
-    print(f"{len(table)} station-days, {int(table['label'].sum())} positive, {int(table['dropped'].sum())} dropped, "
-          f"{table['station'].nunique()} stations -> {args.out}")
+        rows=len(tab), positive=int(tab["label"].sum()), dropped=int(tab["dropped"].sum())), indent=1))
+    print(f"{len(tab)} station-days, {int(tab['label'].sum())} positive, {int(tab['dropped'].sum())} dropped, "
+          f"{tab['station'].nunique()} stations -> {args.out}")
 
 
 if __name__ == "__main__":
