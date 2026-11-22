@@ -8,7 +8,7 @@
 #           and starting the build again with the same command goes on from there
 set -u
 G=$(cat "$1/build.pgid") || exit 1
-if ! ps -o args= -g "$G" | grep -q -E "build_envelopes_zne|forecasting_earthquakes_hopefully"; then echo "no build is running in group $G"; exit 1; fi
+if ! ps -o args= -g "$G" | grep -q -E "build_envelopes_zne|build_correlations|forecasting_earthquakes_hopefully"; then echo "no build is running in group $G"; exit 1; fi
 case $2 in
   pause)  kill -STOP -- "-$G" && echo "paused" ;;
   resume) kill -CONT -- "-$G" && echo "resumed" ;;
